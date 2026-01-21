@@ -13,27 +13,74 @@ and maintainability.
 - OTP Service: handles OTP generation, verification, and rate limiting
 - Notification Service: processes asynchronous notification events
 
-## Cross-Service Communication
+## Service Communication
 
-The platform uses a hybrid communication approach to balance performance
-and reliability:
+### Registration Flow
+- Client sends registration request to API Gateway
+- API Gateway forwards request to User Service
+- User Service creates user account in database
+- User Service publishes `user.created` event to Kafka
+- OTP Service consumes event and generates verification OTP
+- OTP Service publishes `otp.verification_required` event to Kafka
+- Notification Service consumes event and sends verification notification
 
-### Synchronous Communication
-- **REST API**: Services expose HTTP/REST endpoints for direct
-  service-to-service calls when immediate responses are required
-- **Use Cases**: Auth validation, user data retrieval, OTP verification
+### Login Flow
+- Client sends login request to API Gateway
+- API Gateway forwards request to Auth Service
+- Auth Service validates credentials with User Service
+- Auth Service generates and returns JWT (RSA signed)
+- Auth Service publishes `user.logged_in` event to Kafka
+- Notification Service consumes event and sends login notification (optional)
 
-### Asynchronous Communication
-- **Message Queue**: Event-driven communication using message brokers
-  (e.g., RabbitMQ, Kafka) for decoupled operations
-- **Use Cases**: Notification triggers, audit logging, data synchronization
+### OTP Request Flow
+- Client requests OTP via API Gateway
+- API Gateway validates JWT token with Auth Service
+- API Gateway forwards request to OTP Service
+- OTP Service generates OTP and stores in Redis with TTL
+- OTP Service publishes `otp.sent` event to Kafka
+- Notification Service consumes event and sends OTP via email/SMS
 
-### Service Discovery
-- Services register and discover each other through a service registry
-  or DNS-based discovery mechanism
-- Health checks ensure only healthy service instances receive traffic
+### OTP Verification Flow
+- Client submits OTP via API Gateway
+- API Gateway forwards to OTP Service
+- OTP Service validates OTP against Redis cache
+- OTP Service publishes `otp.verified` or `otp.failed` event to Kafka
+- User Service consumes `otp.verified` event and updates user status
 
-### API Contracts
-- Well-defined API contracts between services using OpenAPI/Swagger
-- Versioned APIs to support backward compatibility during updates
+### Protected Resource Access Flow
+- Client sends request with JWT to API Gateway
+- API Gateway validates JWT signature using Auth Service public key
+- API Gateway forwards request to appropriate service (User/OTP/etc)
+- Target service processes request and returns response
+- API Gateway returns response to client
+
+### User Profile Update Flow
+- Client sends update request to API Gateway
+- API Gateway validates JWT and forwards to User Service
+- User Service updates user data in database
+- User Service publishes `user.updated` event to Kafka
+- Audit Service consumes event for logging (future service)
+
+### Password Reset Flow
+- Client requests password reset via API Gateway
+- API Gateway forwards to Auth Service
+- Auth Service verifies user exists via User Service
+- Auth Service publishes `password.reset_requested` event to Kafka
+- OTP Service consumes event and generates reset OTP
+- OTP Service publishes `otp.password_reset` event to Kafka
+- Notification Service sends reset OTP to user
+- Client submits new password with OTP
+- Auth Service validates OTP with OTP Service
+- Auth Service updates password and publishes `password.reset_completed` event
+
+## Data Ownership & Service Boundaries
+
+| Service | Data Owned | Storage | Notes |
+|---------|------------|---------|-------|
+| Auth Service | username, password hash, refresh token | Postgres | JWT signed with RSA |
+| User Service | user profile, email, role, status | Postgres | Emits `user.created/updated` |
+| OTP Service | OTP code, TTL, OTP status | Redis | Event-driven, TTL for expiration |
+| Notification Service | - | - | Consumes events only, no DB |
+| Audit Service | Logs of user actions | Postgres | Consume events for audit & analytics |
+
 
